@@ -1,0 +1,7 @@
+code-server-env/vscode-cli/
+code-server-env/vscode-cli.zip
+node_modules/
+__pycache__/
+.env*
+*.pem
+*.key

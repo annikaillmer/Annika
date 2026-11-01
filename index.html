@@ -1,0 +1,920 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<title>Santas Nachtfahrt</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root { --gold:#ffd98a; --red:#e0323a; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; overflow:hidden; background:#07101f; font-family:Georgia,'Times New Roman',serif; color:#fff; user-select:none; }
+  canvas { display:block; }
+  #vignette { position:fixed; inset:0; pointer-events:none; background:radial-gradient(ellipse at center, transparent 55%, rgba(2,6,18,.55) 100%); }
+  #flash { position:fixed; inset:0; pointer-events:none; background:#ff2030; opacity:0; transition:opacity .45s ease-out; }
+  #hud { position:fixed; inset:0; pointer-events:none; display:none; }
+  .panel { position:absolute; top:18px; padding:10px 20px; border-radius:14px; background:linear-gradient(180deg,rgba(14,26,52,.72),rgba(8,16,34,.72)); border:1px solid rgba(255,217,138,.35); box-shadow:0 6px 24px rgba(0,0,0,.35); backdrop-filter:blur(6px); }
+  .panel small { display:block; font-size:11px; letter-spacing:.18em; text-transform:uppercase; color:#b9c8e8; }
+  .panel b { font-size:34px; font-weight:700; color:var(--gold); text-shadow:0 0 14px rgba(255,200,100,.45); font-variant-numeric:tabular-nums; }
+  #pScore { left:18px; }
+  #pTime { left:50%; transform:translateX(-50%); text-align:center; min-width:150px; }
+  #pTime b { font-size:46px; }
+  #pTime.low b { color:#ff6b6b; animation:pulse .5s infinite alternate; }
+  #pLives { right:18px; text-align:right; }
+  #pLives b { font-size:28px; letter-spacing:4px; color:var(--red); }
+  @keyframes pulse { to { transform:scale(1.12); } }
+  #msg { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; text-align:center; background:radial-gradient(ellipse at center, rgba(4,10,26,.45), rgba(2,6,18,.78)); }
+  #msg.hidden { display:none; }
+  #card { max-width:560px; padding:34px 44px 30px; border-radius:22px; background:linear-gradient(180deg,rgba(18,32,64,.88),rgba(8,16,36,.9)); border:1px solid rgba(255,217,138,.45); box-shadow:0 20px 70px rgba(0,0,0,.55), inset 0 0 40px rgba(255,200,100,.05); }
+  #card h1 { margin:0 0 4px; font-size:46px; letter-spacing:.04em; color:var(--gold); text-shadow:0 0 24px rgba(255,190,90,.5); }
+  #card h2 { margin:0 0 18px; font-weight:400; font-style:italic; font-size:19px; color:#c8d6f2; }
+  #card p { margin:8px 0; line-height:1.5; color:#dfe8fa; font-size:16px; }
+  #card kbd { display:inline-block; min-width:28px; padding:2px 8px; border-radius:6px; background:#22345e; border:1px solid #4d659c; font-family:inherit; font-size:14px; }
+  #go { margin-top:22px; padding:12px 34px; font:700 20px Georgia,serif; color:#3a1200; background:linear-gradient(180deg,#ffe29a,#f0a93a); border:0; border-radius:999px; cursor:pointer; box-shadow:0 6px 22px rgba(240,169,58,.45); pointer-events:auto; }
+  #go:hover { filter:brightness(1.08); }
+  #big { font-size:64px; color:var(--gold); margin:6px 0 2px; font-weight:700; text-shadow:0 0 20px rgba(255,200,100,.5); }
+  #loading { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; background:#07101f; color:#9fb4dc; font-size:18px; letter-spacing:.1em; z-index:10; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="loading">Der Weihnachtsmann spannt an …</div>
+<div id="vignette"></div>
+<div id="flash"></div>
+<div id="hud">
+  <div class="panel" id="pScore"><small>Geschenke</small><b id="score">0</b></div>
+  <div class="panel" id="pTime"><small>Zeit</small><b id="time">45</b></div>
+  <div class="panel" id="pLives"><small>Leben</small><b id="lives">♥♥♥</b></div>
+</div>
+<div id="msg">
+  <div id="card">
+    <h1>Santas Nachtfahrt</h1>
+    <h2>Level 1 · Das verschneite Dorf</h2>
+    <p>Fahre mit den <kbd>←</kbd> <kbd>↑</kbd> <kbd>↓</kbd> <kbd>→</kbd> Pfeiltasten durch die Dorfstraßen.</p>
+    <p>Wo ein Kind am erleuchteten Fenster wartet, fliegt automatisch ein Geschenk hinein, sobald du vorbeifährst.</p>
+    <p>Ein Rudel wilder Rentiere ist hinter dir her – sie dürfen dich nicht erwischen!</p>
+    <p><b>45 Sekunden.</b> Jedes Geschenk zählt. <kbd>P</kbd> = Pause</p>
+    <button id="go">Los geht’s (Leertaste)</button>
+  </div>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+
+/* =====================================================================
+   Das Labyrinth (Pac-Man-Prinzip) – im Spiel nur als Dorfstraßen sichtbar
+   '#' = Baugrund (Haus / Wald / Garten)   '.' = befahrbare Straße
+   ===================================================================== */
+const MAP = [
+  "#####################",
+  "#.........#.........#",
+  "#.###.###.#.###.###.#",
+  "#...................#",
+  "#.###.#.#####.#.###.#",
+  "#.....#...#...#.....#",
+  "#####.###.#.###.#####",
+  "#...................#",
+  "#####.###.#.###.#####",
+  "#.....#...#...#.....#",
+  "#.###.#.#####.#.###.#",
+  "#...................#",
+  "#.###.###.#.###.###.#",
+  "#.........#.........#",
+  "#####################"
+];
+const W = MAP[0].length, H = MAP.length, CELL = 4;
+const open = (x, y) => x >= 0 && y >= 0 && x < W && y < H && MAP[y][x] === '.';
+const wx = x => (x - (W - 1) / 2) * CELL;
+const wz = y => (y - (H - 1) / 2) * CELL;
+const HX = W * CELL / 2, HZ = H * CELL / 2;
+const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+
+const ROUND_TIME = 45, START_LIVES = 3, SANTA_SPEED = 4.3, DEER_SPEED = 3.7, KIDS_AT_ONCE = 8;
+const SANTA_START = [10, 11];
+
+/* ---------- Hilfsfunktionen ---------- */
+function mulberry32(a) { return function () { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+const rng = mulberry32(20261224);
+const R = (a = 0, b = 1) => a + (b - a) * rng();
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const smooth = (a, b, v) => { const t = clamp((v - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+function mkCanvas(w, h) { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; }
+function noiseCanvas(c, amp) {
+  const ctx = c.getContext('2d'); const id = ctx.getImageData(0, 0, c.width, c.height); const d = id.data;
+  for (let i = 0; i < d.length; i += 4) { const n = (Math.random() - 0.5) * amp; d[i] += n; d[i + 1] += n; d[i + 2] += n; }
+  ctx.putImageData(id, 0, 0);
+}
+
+/* ---------- Renderer, Szene, Kamera ---------- */
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+renderer.setPixelRatio(1);
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.15;
+document.body.prepend(renderer.domElement);
+const maxAniso = renderer.capabilities.getMaxAnisotropy();
+
+const scene = new THREE.Scene();
+const HORIZON = new THREE.Color(0x5b6d9c);
+scene.fog = new THREE.FogExp2(0x4a5b8c, 0.0105);
+const camera = new THREE.PerspectiveCamera(38, innerWidth / innerHeight, 0.5, 900);
+
+const particleUniforms = { uScale: { value: 1 } };
+/* ---------- Himmel ---------- */
+{
+  const geo = new THREE.SphereGeometry(600, 32, 16);
+  const mat = new THREE.ShaderMaterial({
+    side: THREE.BackSide, depthWrite: false, fog: false,
+    vertexShader: 'varying vec3 vP; void main(){ vP=position; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.); }',
+    fragmentShader: `varying vec3 vP;
+      void main(){
+        float h = normalize(vP).y;
+        vec3 top = vec3(0.015,0.03,0.10);
+        vec3 mid = vec3(0.10,0.17,0.38);
+        vec3 hor = vec3(0.52,0.46,0.58);
+        vec3 c = mix(hor, mid, smoothstep(0.0, 0.28, h));
+        c = mix(c, top, smoothstep(0.22, 0.85, h));
+        c += vec3(0.30,0.16,0.08) * pow(max(0., 1.0 - abs(h)*5.0), 3.0) * 0.55;
+        gl_FragColor = vec4(c,1.);
+      }`
+  });
+  scene.add(new THREE.Mesh(geo, mat));
+
+  const n = 1400, p = new Float32Array(n * 3), s = new Float32Array(n), a = new Float32Array(n), col = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) {
+    const u = R(), v = R(0.06, 1); const th = u * Math.PI * 2, y = v, r = Math.sqrt(1 - y * y);
+    p.set([Math.cos(th) * r * 560, y * 560, Math.sin(th) * r * 560], i * 3);
+    s[i] = R(1.2, 3.2) * 60; a[i] = R(0.35, 1); const t = R(); col.set([0.8 + t * 0.2, 0.85 + t * 0.1, 1], i * 3);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(p, 3));
+  g.setAttribute('aSize', new THREE.BufferAttribute(s, 1));
+  g.setAttribute('aAlpha', new THREE.BufferAttribute(a, 1));
+  g.setAttribute('aColor', new THREE.BufferAttribute(col, 3));
+  const stars = new THREE.Points(g, particleMaterial({ additive: true, soft: 0.2, fog: false }));
+  stars.frustumCulled = false; scene.add(stars);
+
+  // Mond
+  const moon = new THREE.Mesh(new THREE.SphereGeometry(18, 32, 16), new THREE.MeshBasicMaterial({ color: 0xf2f4ff, fog: false, toneMapped: false }));
+  moon.position.set(-230, 250, -380); scene.add(moon);
+  const halo = makeGlowSprite(0xaec6ff, 0.55); halo.scale.set(240, 240, 1); halo.position.copy(moon.position); halo.material.fog = false; scene.add(halo);
+}
+
+/* ---------- Partikel-Shader (Schnee, Funken, Rauch, Atem) ---------- */
+function particleMaterial({ additive = false, soft = 0.4, fog = true } = {}) {
+  return new THREE.ShaderMaterial({
+    uniforms: { uScale: particleUniforms.uScale, uSoft: { value: soft } },
+    transparent: true, depthWrite: false,
+    blending: additive ? THREE.AdditiveBlending : THREE.NormalBlending,
+    vertexShader: `attribute float aSize; attribute float aAlpha; attribute vec3 aColor; uniform float uScale;
+      varying float vA; varying vec3 vC;
+      void main(){ vA=aAlpha; vC=aColor; vec4 mv=modelViewMatrix*vec4(position,1.); gl_PointSize=aSize*uScale/max(0.1,-mv.z); gl_Position=projectionMatrix*mv; }`,
+    fragmentShader: `varying float vA; varying vec3 vC; uniform float uSoft;
+      void main(){ float d=length(gl_PointCoord-0.5)*2.; float a=smoothstep(1.0,uSoft,d)*vA; if(a<0.004) discard; gl_FragColor=vec4(vC,a); }`
+  });
+}
+class Particles {
+  constructor(n, opts) {
+    this.n = n; this.pos = new Float32Array(n * 3); this.vel = new Float32Array(n * 3);
+    this.size = new Float32Array(n); this.alpha = new Float32Array(n); this.color = new Float32Array(n * 3);
+    this.life = new Float32Array(n); this.maxLife = new Float32Array(n); this.size0 = new Float32Array(n); this.grow = new Float32Array(n);
+    this.next = 0; this.gravity = opts.gravity || 0; this.drag = opts.drag || 0;
+    const g = new THREE.BufferGeometry();
+    this.aPos = new THREE.BufferAttribute(this.pos, 3); this.aSize = new THREE.BufferAttribute(this.size, 1);
+    this.aAlpha = new THREE.BufferAttribute(this.alpha, 1); this.aColor = new THREE.BufferAttribute(this.color, 3);
+    [this.aPos, this.aSize, this.aAlpha, this.aColor].forEach(a => a.setUsage(THREE.DynamicDrawUsage));
+    g.setAttribute('position', this.aPos); g.setAttribute('aSize', this.aSize); g.setAttribute('aAlpha', this.aAlpha); g.setAttribute('aColor', this.aColor);
+    this.mesh = new THREE.Points(g, particleMaterial(opts)); this.mesh.frustumCulled = false; scene.add(this.mesh);
+  }
+  emit(x, y, z, vx, vy, vz, life, size, color, grow = 0) {
+    const i = this.next; this.next = (this.next + 1) % this.n;
+    this.pos.set([x, y, z], i * 3); this.vel.set([vx, vy, vz], i * 3);
+    this.life[i] = life; this.maxLife[i] = life; this.size0[i] = size; this.grow[i] = grow; this.color.set(color, i * 3);
+  }
+  update(dt) {
+    for (let i = 0; i < this.n; i++) {
+      if (this.life[i] <= 0) { this.alpha[i] = 0; continue; }
+      this.life[i] -= dt; const k = i * 3, f = 1 - this.drag * dt;
+      this.vel[k] *= f; this.vel[k + 1] = this.vel[k + 1] * f - this.gravity * dt; this.vel[k + 2] *= f;
+      this.pos[k] += this.vel[k] * dt; this.pos[k + 1] += this.vel[k + 1] * dt; this.pos[k + 2] += this.vel[k + 2] * dt;
+      const t = clamp(this.life[i] / this.maxLife[i], 0, 1);
+      this.alpha[i] = Math.min(t * 2.2, 1) * Math.min((1 - t) * 8, 1);
+      this.size[i] = this.size0[i] * (1 + this.grow[i] * (1 - t));
+    }
+    this.aPos.needsUpdate = this.aAlpha.needsUpdate = this.aSize.needsUpdate = this.aColor.needsUpdate = true;
+  }
+}
+function makeGlowSprite(color, opacity = 1) {
+  const c = mkCanvas(128, 128), x = c.getContext('2d'); const g = x.createRadialGradient(64, 64, 0, 64, 64, 64);
+  g.addColorStop(0, 'rgba(255,255,255,1)'); g.addColorStop(0.25, 'rgba(255,255,255,.45)'); g.addColorStop(1, 'rgba(255,255,255,0)');
+  x.fillStyle = g; x.fillRect(0, 0, 128, 128);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace;
+  return new THREE.Sprite(new THREE.SpriteMaterial({ map: t, color, opacity, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+}
+
+/* ---------- Lichter ---------- */
+const hemi = new THREE.HemisphereLight(0x7f9bd8, 0xc6d6f5, 0.95); scene.add(hemi);
+const moonLight = new THREE.DirectionalLight(0xb4c8ff, 2.1);
+moonLight.position.set(-34, 52, -22);
+moonLight.castShadow = true;
+moonLight.shadow.mapSize.set(1536, 1536);
+Object.assign(moonLight.shadow.camera, { left: -38, right: 38, top: 30, bottom: -30, near: 5, far: 140 });
+moonLight.shadow.bias = -0.0004; moonLight.shadow.normalBias = 0.06;
+scene.add(moonLight, moonLight.target);
+const MOON_OFFSET = moonLight.position.clone();
+
+/* ---------- Materialien & Texturen ---------- */
+const std = (color, rough = 0.8, metal = 0, extra = {}) => new THREE.MeshStandardMaterial({ color, roughness: rough, metalness: metal, ...extra });
+const snowMat = std(0xf3f7ff, 0.55, 0);
+const snowDark = std(0xdfe8f8, 0.7, 0);
+function repeatTex(c, rx, ry, srgb = true) {
+  const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(rx, ry); t.anisotropy = maxAniso;
+  if (srgb) t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+const plankTex = (() => {
+  const c = mkCanvas(256, 256), x = c.getContext('2d'); x.fillStyle = '#d8d8d8'; x.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 16; i++) { x.fillStyle = `rgba(0,0,0,${0.10 + Math.random() * 0.12})`; x.fillRect(0, i * 16 + 14, 256, 2); x.fillStyle = `rgba(255,255,255,${Math.random() * 0.1})`; x.fillRect(0, i * 16, 256, 14); }
+  for (let i = 0; i < 90; i++) { x.fillStyle = `rgba(0,0,0,${Math.random() * 0.07})`; x.fillRect(Math.random() * 256, Math.random() * 256, Math.random() * 60 + 8, 1); }
+  noiseCanvas(c, 18); return repeatTex(c, 1, 1);
+})();
+const roofTex = (() => {
+  const c = mkCanvas(256, 256), x = c.getContext('2d'); x.fillStyle = '#c4c4c4'; x.fillRect(0, 0, 256, 256);
+  for (let r = 0; r < 8; r++) for (let i = 0; i < 9; i++) {
+    const ox = (r % 2) * 16, g = 150 + Math.random() * 90; x.fillStyle = `rgb(${g},${g},${g})`; x.fillRect(i * 32 + ox - 16, r * 32, 30, 30);
+    x.fillStyle = 'rgba(0,0,0,.28)'; x.fillRect(i * 32 + ox - 16, r * 32 + 28, 30, 3);
+  }
+  noiseCanvas(c, 14); return repeatTex(c, 0.35, 0.35);
+})();
+const wallColors = [0xb7623f, 0x8a5a3a, 0xc9b79a, 0x6f8fa8, 0x9b4a3a, 0xd2a15b, 0x7c8a6a, 0xa86a52];
+const wallMats = wallColors.map(c => std(c, 0.85, 0, { map: plankTex }));
+const roofMats = [0x5a2b2b, 0x3b3f55, 0x2f4a3a, 0x6a3b24].map(c => std(c, 0.8, 0, { map: roofTex }));
+const trimMat = std(0xf2ede4, 0.6);
+const doorMat = std(0x4a2a18, 0.7);
+const brickMat = std(0x8a4a3c, 0.9);
+const darkWood = std(0x2c1d14, 0.8);
+const ironMat = std(0x1d232d, 0.5, 0.8);
+
+/* =====================================================================
+   Gelände: Straßenmuster als Textur – das Labyrinth bleibt unsichtbar
+   ===================================================================== */
+function buildGround() {
+  const S = 64, w = W * S, h = H * S;
+  const col = mkCanvas(w, h), c = col.getContext('2d');
+  c.fillStyle = '#eef3fc'; c.fillRect(0, 0, w, h);
+  for (let i = 0; i < 520; i++) {
+    const x = Math.random() * w, y = Math.random() * h, r = 20 + Math.random() * 90, g = c.createRadialGradient(x, y, 0, x, y, r);
+    const dark = Math.random() < 0.5; g.addColorStop(0, dark ? 'rgba(150,170,215,.10)' : 'rgba(255,255,255,.18)'); g.addColorStop(1, 'rgba(255,255,255,0)');
+    c.fillStyle = g; c.fillRect(x - r, y - r, r * 2, r * 2);
+  }
+  const mkRoad = (fill) => {
+    const rc = mkCanvas(w, h), r = rc.getContext('2d'); r.filter = 'blur(15px)'; r.fillStyle = fill;
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (open(x, y)) {
+      const l = open(x - 1, y) ? 0 : 7, rt = open(x + 1, y) ? 0 : 7, t = open(x, y - 1) ? 0 : 7, b = open(x, y + 1) ? 0 : 7;
+      r.fillRect(x * S + l - (open(x - 1, y) ? 2 : 0), y * S + t - (open(x, y - 1) ? 2 : 0), S - l - rt + 4, S - t - b + 4);
+    }
+    return rc;
+  };
+  c.drawImage(mkRoad('#7f8fb2'), 0, 0);
+  c.filter = 'blur(2.5px)'; c.lineCap = 'round';
+  const tracks = (ctx, color, lw) => {
+    ctx.strokeStyle = color; ctx.lineWidth = lw;
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (open(x, y)) {
+      const cx = (x + .5) * S, cy = (y + .5) * S;
+      for (const [dx, dy] of [[1, 0], [0, 1]]) if (open(x + dx, y + dy)) for (const o of [-0.17, 0.17]) {
+        ctx.beginPath(); ctx.moveTo(cx - dy * o * S * 1.0 * -1 + 0, cy + dx * o * S); ctx.lineTo(cx + dx * S + dy * o * S, cy + dy * S + dx * o * S); ctx.stroke();
+      }
+    }
+  };
+  tracks(c, 'rgba(70,86,125,.5)', 5);
+  c.filter = 'none'; noiseCanvas(col, 10);
+  const colTex = new THREE.CanvasTexture(col); colTex.colorSpace = THREE.SRGBColorSpace; colTex.anisotropy = maxAniso;
+
+  const bump = mkCanvas(w, h), b = bump.getContext('2d'); b.fillStyle = '#c8c8c8'; b.fillRect(0, 0, w, h);
+  b.drawImage(mkRoad('#7c7c7c'), 0, 0); b.filter = 'blur(3px)'; tracks(b, 'rgba(40,40,40,.7)', 6); b.filter = 'none'; noiseCanvas(bump, 40);
+  const bumpTex = new THREE.CanvasTexture(bump); bumpTex.anisotropy = maxAniso;
+
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(W * CELL, H * CELL), new THREE.MeshStandardMaterial({ map: colTex, bumpMap: bumpTex, bumpScale: 2.2, roughness: 0.62, color: 0xffffff }));
+  m.rotation.x = -Math.PI / 2; m.position.y = 0.02; m.receiveShadow = true; scene.add(m);
+}
+const terrainH = (x, z) => {
+  const dx = Math.max(Math.abs(x) - HX, 0), dz = Math.max(Math.abs(z) - HZ, 0), d = Math.hypot(dx, dz);
+  const n = Math.sin(x * 0.045 + 1.3) * Math.cos(z * 0.05) + 0.5 * Math.sin(x * 0.11 + z * 0.09) + 0.25 * Math.sin(x * 0.27 - z * 0.21);
+  return smooth(4, 70, d) * (10 + 22 * smooth(40, 200, d)) * (0.65 + 0.35 * n) + smooth(0, 14, d) * 0.5 * (n + 1) * 0.5;
+};
+function buildTerrain() {
+  const size = 900, seg = 220, g = new THREE.PlaneGeometry(size, size, seg, seg); g.rotateX(-Math.PI / 2);
+  const p = g.attributes.position, colors = new Float32Array(p.count * 3), c = new THREE.Color();
+  for (let i = 0; i < p.count; i++) {
+    const x = p.getX(i), z = p.getZ(i), h = terrainH(x, z); p.setY(i, h - 0.04);
+    c.setRGB(0.92, 0.95, 1.0).lerp(new THREE.Color(0.62, 0.7, 0.88), smooth(5, 55, h)); colors.set([c.r, c.g, c.b], i * 3);
+  }
+  g.setAttribute('color', new THREE.BufferAttribute(colors, 3)); g.computeVertexNormals();
+  const m = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.75 })); m.receiveShadow = true; scene.add(m);
+}
+
+/* ---------- Bäume (Instancing) ---------- */
+const treeList = [];
+function addTree(x, z, s = 1) { treeList.push({ x, z, s, y: terrainH(x, z), rot: R(0, 6.28) }); }
+function buildTrees() {
+  const layers = 4, N = treeList.length, dummy = new THREE.Object3D();
+  const greenMat = std(0x16402f, 0.9), trunkMat = std(0x3a2518, 0.9);
+  const iTrunk = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.16, 0.26, 1.2, 8), trunkMat, N);
+  const green = [], snow = [];
+  for (let l = 0; l < layers; l++) {
+    const r = 1.55 - l * 0.33, h = 1.45 - l * 0.12;
+    const gm = new THREE.InstancedMesh(new THREE.ConeGeometry(r, h, 10, 1, true), greenMat.clone(), N); gm.material.side = THREE.DoubleSide;
+    const sm = new THREE.InstancedMesh(new THREE.ConeGeometry(r * 0.93, h * 0.82, 10), snowMat, N);
+    green.push({ m: gm, r, h, l }); snow.push({ m: sm, r, h, l });
+  }
+  treeList.forEach((t, i) => {
+    dummy.position.set(t.x, t.y + 0.6 * t.s, t.z); dummy.rotation.set(0, t.rot, 0); dummy.scale.setScalar(t.s); dummy.updateMatrix(); iTrunk.setMatrixAt(i, dummy.matrix);
+    for (let l = 0; l < layers; l++) {
+      const y = t.y + (1.0 + l * 0.95) * t.s;
+      dummy.position.set(t.x, y + green[l].h * 0.5 * t.s, t.z); dummy.rotation.set((Math.random() - .5) * .04, t.rot, (Math.random() - .5) * .04); dummy.updateMatrix();
+      green[l].m.setMatrixAt(i, dummy.matrix);
+      dummy.position.y += 0.1 * t.s; dummy.updateMatrix(); snow[l].m.setMatrixAt(i, dummy.matrix);
+    }
+  });
+  [iTrunk, ...green.map(o => o.m), ...snow.map(o => o.m)].forEach(m => { m.castShadow = true; m.receiveShadow = true; m.instanceMatrix.needsUpdate = true; scene.add(m); });
+}
+
+/* =====================================================================
+   Häuser, Kinder, Deko
+   ===================================================================== */
+const houses = [];
+const twinkle = { list: [], mesh: null };
+const smokers = [];
+const icicles = [];
+const lampSpots = [];
+
+function roofGeometry(len, width, rise, inset = 0, lift = 0) {
+  const hw = width / 2 - inset;
+  const s = new THREE.Shape(); s.moveTo(-hw, 0); s.lineTo(hw, 0); s.lineTo(0, rise + lift); s.closePath();
+  const g = new THREE.ExtrudeGeometry(s, { depth: len, bevelEnabled: false }); g.translate(0, 0, -len / 2); g.rotateY(Math.PI / 2); return g;
+}
+const geo = {
+  box: new THREE.BoxGeometry(1, 1, 1),
+  sphere: new THREE.SphereGeometry(1, 20, 14),
+  cyl: new THREE.CylinderGeometry(1, 1, 1, 14),
+  cone: new THREE.ConeGeometry(1, 1, 12),
+};
+function mesh(g, m, sx = 1, sy = 1, sz = 1, px = 0, py = 0, pz = 0, cast = true) {
+  const o = new THREE.Mesh(g, m); o.scale.set(sx, sy, sz); o.position.set(px, py, pz); o.castShadow = cast; o.receiveShadow = true; return o;
+}
+const kidTextures = [0xd13a3a, 0x2f7bd1, 0x3aa65a].map(hat => {
+  const c = mkCanvas(128, 160), x = c.getContext('2d');
+  x.fillStyle = '#1b1006';
+  x.beginPath(); x.ellipse(64, 150, 50, 44, 0, Math.PI, 0); x.fill();
+  x.fillStyle = '#' + hat.toString(16).padStart(6, '0'); x.fillRect(16, 98, 96, 62);
+  x.fillStyle = '#f2c9a0'; x.beginPath(); x.arc(64, 62, 30, 0, 6.3); x.fill();
+  x.fillStyle = ['#6b3f1e', '#d9a441', '#2a1a10'][hat % 3]; x.beginPath(); x.arc(64, 52, 31, Math.PI, 0); x.fill(); x.fillRect(33, 52, 62, 8);
+  x.fillStyle = '#222'; x.beginPath(); x.arc(53, 66, 3.4, 0, 6.3); x.arc(75, 66, 3.4, 0, 6.3); x.fill();
+  x.strokeStyle = '#a2402f'; x.lineWidth = 3; x.beginPath(); x.arc(64, 78, 11, 0.15, Math.PI - 0.15); x.stroke();
+  x.strokeStyle = '#f2c9a0'; x.lineWidth = 14; x.lineCap = 'round'; x.beginPath(); x.moveTo(24, 128); x.lineTo(10, 74); x.moveTo(104, 128); x.lineTo(118, 74); x.stroke();
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+});
+
+function buildHouse(cx, cy, face) {
+  const g = new THREE.Group();
+  const w = R(2.7, 3.1), d = R(2.1, 2.5), wallH = R(1.6, 1.95), rise = R(1.0, 1.35);
+  const wm = wallMats[Math.floor(R(0, wallMats.length))], rm = roofMats[Math.floor(R(0, roofMats.length))];
+  g.add(mesh(geo.box, wm, w, wallH, d, 0, wallH / 2, 0));
+  g.add(mesh(geo.box, trimMat, w + 0.12, 0.14, d + 0.12, 0, 0.07, 0));     // Sockel
+  const ov = 0.5;
+  const roof = new THREE.Mesh(roofGeometry(w + ov * 1.2, d + ov * 1.4, rise), rm); roof.position.y = wallH; roof.castShadow = roof.receiveShadow = true; g.add(roof);
+  const sn = new THREE.Mesh(roofGeometry(w + ov * 1.3, d + ov * 1.4, rise, 0.11, 0.1), snowMat); sn.position.y = wallH + 0.05; sn.castShadow = sn.receiveShadow = true; g.add(sn);
+  // Giebelwände
+  const gable = new THREE.Shape(); gable.moveTo(-d / 2, 0); gable.lineTo(d / 2, 0); gable.lineTo(0, rise); gable.closePath();
+  for (const sx of [-1, 1]) {
+    const gm = new THREE.Mesh(new THREE.ShapeGeometry(gable), wm); gm.rotation.y = sx * Math.PI / 2; gm.position.set(sx * (w / 2 + 0.005), wallH, 0); gm.receiveShadow = true; g.add(gm);
+  }
+  // Schornstein
+  const chx = R(0.5, 0.9) * (rng() < 0.5 ? -1 : 1);
+  g.add(mesh(geo.box, brickMat, 0.42, 1.1, 0.42, chx, wallH + rise * 0.72, -d * 0.18));
+  g.add(mesh(geo.box, snowMat, 0.52, 0.12, 0.52, chx, wallH + rise * 0.72 + 0.6, -d * 0.18));
+  if (smokers.length < 18) smokers.push({ g, x: chx, y: wallH + rise * 0.72 + 0.7, z: -d * 0.18, t: Math.random() * 4 });
+  // Tür
+  const front = d / 2 + 0.01;
+  g.add(mesh(geo.box, doorMat, 0.62, 1.05, 0.06, 0, 0.58, front));
+  g.add(mesh(geo.box, trimMat, 0.78, 0.1, 0.1, 0, 1.15, front + 0.02));
+  g.add(mesh(geo.box, snowMat, 0.86, 0.07, 0.2, 0, 1.22, front + 0.07));
+  // Türkranz
+  const wreath = new THREE.Mesh(new THREE.TorusGeometry(0.15, 0.05, 8, 16), std(0x1d5a30, 0.9)); wreath.position.set(0, 0.78, front + 0.07); g.add(wreath);
+  const bow = mesh(geo.sphere, std(0xc01a22, 0.5), 0.07, 0.07, 0.05, 0, 0.62, front + 0.1); g.add(bow);
+  // Fenster
+  const mkWindow = (x, active) => {
+    const wg = new THREE.Group(); wg.position.set(x, wallH * 0.58, front);
+    wg.add(mesh(geo.box, trimMat, 0.66, 0.66, 0.07, 0, 0, 0, false));
+    const glassMat = new THREE.MeshStandardMaterial({ color: 0x1c1208, emissive: new THREE.Color(0xffa94a), emissiveIntensity: active ? 0.4 : (rng() < 0.55 ? 0.9 : 0.12), roughness: 0.3 });
+    const glass = new THREE.Mesh(new THREE.PlaneGeometry(0.52, 0.52), glassMat); glass.position.z = 0.04; wg.add(glass);
+    wg.add(mesh(geo.box, trimMat, 0.54, 0.035, 0.05, 0, 0, 0.05, false)); wg.add(mesh(geo.box, trimMat, 0.035, 0.54, 0.05, 0, 0, 0.05, false));
+    wg.add(mesh(geo.box, snowMat, 0.78, 0.09, 0.24, 0, -0.37, 0.1));
+    // Vorhang-Schatten
+    const curtain = mesh(geo.box, std(0xa63a3a, 0.9), 0.1, 0.52, 0.02, -0.21, 0, 0.055, false); wg.add(curtain);
+    g.add(wg); return { wg, glassMat, glass };
+  };
+  const kidWin = mkWindow(-w * 0.31, true); mkWindow(w * 0.31, false);
+  const kid = new THREE.Mesh(new THREE.PlaneGeometry(0.42, 0.52), new THREE.MeshBasicMaterial({ map: kidTextures[Math.floor(R(0, 3))], transparent: true, toneMapped: false, color: 0xffdcae }));
+  kid.position.set(0, -0.12, 0.06); kid.visible = false; kidWin.wg.add(kid);
+  const glow = makeGlowSprite(0xffb55a, 0.0); glow.scale.set(2.3, 2.3, 1); glow.position.set(0, 0, 0.5); kidWin.wg.add(glow);
+  const present = new THREE.Group(); present.visible = false; present.position.set(0.05, -0.28, 0.12); kidWin.wg.add(present);
+  const star = makeGlowSprite(0xffd36a, 0); star.scale.set(2.6, 2.6, 1); star.position.set(0, wallH + rise + 1.3, 0); g.add(star);
+  const beam = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 1.8, 6, 1, true), new THREE.MeshBasicMaterial({ color: 0xffd36a, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false }));
+  beam.position.set(0, wallH + rise + 0.4, 0); g.add(beam);
+
+  // Eiszapfen
+  for (let i = 0; i < 9; i++) icicles.push({ g, x: -w / 2 - 0.15 + (w + 0.3) * (i / 8), y: wallH - 0.05, z: d / 2 + 0.12, s: R(0.07, 0.16) });
+  // Lichterkette an der Traufe
+  for (let i = 0; i < 12; i++) twinkle.list.push({ g, x: -w / 2 - 0.2 + (w + 0.4) * (i / 11), y: wallH + 0.04 - Math.sin(i / 11 * Math.PI) * -0.05, z: d / 2 + 0.3, ph: R(0, 6.3), base: [[1, .15, .1], [.2, 1, .3], [1, .85, .2], [.2, .5, 1]][i % 4] });
+
+  // Laterne neben der Tür
+  const lamp = mesh(geo.sphere, new THREE.MeshBasicMaterial({ color: 0xffd9a0, toneMapped: false }), 0.07, 0.09, 0.07, 0.5, 1.2, front + 0.1, false); g.add(lamp);
+
+  // Platzierung
+  const bx = wx(cx), bz = wz(cy);
+  g.position.set(bx + face[0] * 0.55, 0.02, bz + face[1] * 0.55);
+  g.rotation.y = Math.atan2(face[0], face[1]); g.scale.setScalar(1.12);
+  g.traverse(o => { if (o.isMesh) o.castShadow = false; });
+  g.children[0].castShadow = true; roof.castShadow = true; sn.castShadow = true;
+  scene.add(g); g.updateMatrixWorld(true);
+  const animated = new Set();
+  const h = { cx, cy, g, face, kid, glow, star, beam, topY: wallH + rise + 1.3, present, glassMat: kidWin.glassMat, state: 'idle', timer: 0, kidWin: kidWin.wg };
+  [kid, star, beam, present].forEach(o => animated.add(o));
+  g.traverse(o => { if (!animated.has(o)) o.matrixAutoUpdate = false; });
+  houses.push(h);
+}
+function buildDecor() {
+  const mounds = [];
+  const cells = [];
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (!open(x, y)) {
+    const border = x === 0 || y === 0 || x === W - 1 || y === H - 1;
+    const nb = DIRS.filter(d => open(x + d[0], y + d[1]));
+    cells.push({ x, y, border, nb });
+  }
+  const eligible = cells.filter(c => !c.border && c.nb.length);
+  const houseSet = new Set(); const shuffled = eligible.map(c => [rng(), c]).sort((a, b) => a[0] - b[0]).map(a => a[1]);
+  // Häuser so verteilen, dass Nachbarzellen nicht alle gleich aussehen
+  const target = Math.round(eligible.length * 0.62);
+  for (const c of shuffled) { if (houseSet.size >= target) break; houseSet.add(c.x + ',' + c.y); }
+
+  for (const c of cells) {
+    const X = wx(c.x), Z = wz(c.y);
+    mounds.push({ x: X, z: Z, sx: R(1.8, 2.15), sy: R(0.22, 0.42), sz: R(1.8, 2.15), ry: R(0, 3) });
+    if (houseSet.has(c.x + ',' + c.y)) {
+      const f = c.nb[Math.floor(R(0, c.nb.length))]; buildHouse(c.x, c.y, f);
+      addTree(X + R(-1.5, 1.5), Z + R(-1.5, 1.5), R(0.55, 0.85));
+    } else if (c.border) {
+      const n = 2; for (let i = 0; i < n; i++) addTree(X + R(-1.9, 1.9), Z + R(-1.9, 1.9), R(1.0, 1.7));
+    } else {
+      const roll = rng();
+      if (roll < 0.55) { const n = 3 + Math.floor(R(0, 3)); for (let i = 0; i < n; i++) addTree(X + R(-1.5, 1.5), Z + R(-1.5, 1.5), R(0.7, 1.35)); }
+      else if (roll < 0.8) { buildSnowman(X + R(-.6, .6), Z + R(-.6, .6)); addTree(X + 1.3, Z - 1.2, 0.8); addTree(X - 1.3, Z + 1.2, 0.7); }
+      else { buildLogs(X, Z); addTree(X + 1.4, Z + 1.2, 0.9); addTree(X - 1.2, Z - 1.3, 1.1); }
+    }
+  }
+  // Wald hinter dem Dorf
+  for (let i = 0; i < 520; i++) {
+    const a = R(0, Math.PI * 2); let x = Math.cos(a) * 1000, z = Math.sin(a) * 1000;
+    x = clamp(x, -HX - R(3, 34), HX + R(3, 34)); z = clamp(z, -HZ - R(3, 30), HZ + R(3, 30));
+    if (Math.abs(x) < HX + 1 && Math.abs(z) < HZ + 1) continue; addTree(x, z, R(1.1, 2.1));
+  }
+  const mm = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 20, 10), snowMat, mounds.length), d = new THREE.Object3D();
+  mounds.forEach((m, i) => { d.position.set(m.x, 0, m.z); d.scale.set(m.sx, m.sy, m.sz); d.rotation.y = m.ry; d.updateMatrix(); mm.setMatrixAt(i, d.matrix); });
+  mm.receiveShadow = true; mm.castShadow = true; scene.add(mm);
+
+  // Eiszapfen (instanced)
+  const ic = new THREE.InstancedMesh(new THREE.ConeGeometry(1, 1, 5), new THREE.MeshStandardMaterial({ color: 0xcfe8ff, roughness: 0.1, metalness: 0.1, emissive: 0x3a5a88, emissiveIntensity: 0.4 }), icicles.length);
+  const m4 = new THREE.Matrix4(), v = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
+  icicles.forEach((it, i) => {
+    v.set(it.x, it.y - it.s * 2, it.z); it.g.localToWorld(v); q.setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI); s.set(it.s * 0.35, it.s * 4, it.s * 0.35);
+    m4.compose(v, q, s); ic.setMatrixAt(i, m4);
+  });
+  scene.add(ic);
+
+  // Lichterketten
+  const bulbs = new THREE.InstancedMesh(new THREE.SphereGeometry(0.075, 8, 6), new THREE.MeshBasicMaterial({ toneMapped: false }), twinkle.list.length);
+  twinkle.list.forEach((t, i) => { v.set(t.x, t.y, t.z); t.g.localToWorld(v); m4.makeTranslation(v.x, v.y, v.z); bulbs.setMatrixAt(i, m4); bulbs.setColorAt(i, new THREE.Color(1, 1, 1)); });
+  twinkle.mesh = bulbs; scene.add(bulbs);
+  twinkle.tmp = new THREE.Color();
+
+  // Straßenlaternen
+  const spots = [[2, 3], [18, 3], [10, 3], [4, 7], [16, 7], [10, 11], [2, 11], [18, 11], [10, 1], [10, 13], [6, 5], [14, 9]];
+  const lit = new Set(['10,3', '4,7', '16,7', '10,11', '2,11', '18,3']);
+  for (const [lx, ly] of spots) {
+    if (!open(lx, ly)) continue; const X = wx(lx) + 1.45, Z = wz(ly) + 1.45;
+    const lg = new THREE.Group(); lg.position.set(X, 0, Z);
+    lg.add(mesh(geo.cyl, ironMat, 0.07, 2.4, 0.07, 0, 1.2, 0)); lg.add(mesh(geo.box, ironMat, 0.3, 0.12, 0.3, 0, 2.45, 0)); lg.add(mesh(geo.cone, ironMat, 0.28, 0.2, 0.28, 0, 2.7, 0));
+    lg.add(mesh(geo.box, new THREE.MeshBasicMaterial({ color: 0xffe2a8, toneMapped: false }), 0.18, 0.28, 0.18, 0, 2.55, 0, false));
+    const gs = makeGlowSprite(0xffc070, 0.45); gs.scale.set(2.4, 2.4, 1); gs.position.y = 2.55; lg.add(gs);
+    lg.add(mesh(geo.sphere, snowMat, 0.2, 0.08, 0.2, 0, 2.82, 0));
+    lg.traverse(o => { if (o.isMesh) o.castShadow = false; }); lg.updateMatrixWorld(true); lg.traverse(o => { o.matrixAutoUpdate = false; });
+    scene.add(lg);
+  }
+}
+function buildSnowman(x, z) {
+  const g = new THREE.Group(); g.position.set(x, 0, z); g.rotation.y = R(0, 6);
+  g.add(mesh(geo.sphere, snowMat, 0.55, 0.5, 0.55, 0, 0.45, 0)); g.add(mesh(geo.sphere, snowMat, 0.42, 0.4, 0.42, 0, 1.15, 0)); g.add(mesh(geo.sphere, snowMat, 0.3, 0.3, 0.3, 0, 1.68, 0));
+  g.add(mesh(geo.cone, std(0xff7a1a, 0.6), 0.05, 0.3, 0.05, 0, 1.68, 0.3)).rotation.x = Math.PI / 2;
+  g.children[g.children.length - 1].position.set(0, 1.68, 0.35);
+  for (const s of [-1, 1]) g.add(mesh(geo.sphere, std(0x050505, 0.4), 0.035, 0.035, 0.035, s * 0.1, 1.76, 0.27, false));
+  g.add(mesh(geo.cyl, std(0x111111, 0.7), 0.32, 0.04, 0.32, 0, 1.92, 0)); g.add(mesh(geo.cyl, std(0x111111, 0.7), 0.2, 0.28, 0.2, 0, 2.06, 0));
+  g.add(mesh(geo.cyl, std(0xc0202a, 0.8), 0.205, 0.06, 0.205, 0, 1.97, 0, false));
+  g.add(mesh(geo.cyl, std(0xc0202a, 0.8), 0.32, 0.08, 0.32, 0, 1.43, 0, false));
+  scene.add(g);
+}
+function buildLogs(x, z) {
+  const g = new THREE.Group(); g.position.set(x, 0.1, z); g.rotation.y = R(0, 3);
+  const lm = std(0x5a3a22, 0.9);
+  for (let i = 0; i < 6; i++) { const r = 0.16; const row = i < 3 ? 0 : 1; const o = mesh(geo.cyl, lm, r, 1.3, r, (i % 3 - 1) * 0.34 + row * 0.17, 0.16 + row * 0.28, 0); o.rotation.z = Math.PI / 2; g.add(o); }
+  g.add(mesh(geo.box, snowMat, 1.35, 0.1, 0.6, 0.05, 0.62, 0));
+  scene.add(g);
+}
+
+/* =====================================================================
+   Schlitten mit Weihnachtsmann
+   ===================================================================== */
+function giftBox(color, ribbon, s = 1) {
+  const g = new THREE.Group(); const bm = std(color, 0.45), rm = std(ribbon, 0.3, 0.4);
+  g.add(mesh(geo.box, bm, 0.34 * s, 0.3 * s, 0.34 * s)); g.add(mesh(geo.box, rm, 0.36 * s, 0.31 * s, 0.07 * s)); g.add(mesh(geo.box, rm, 0.07 * s, 0.31 * s, 0.36 * s));
+  g.add(mesh(geo.sphere, rm, 0.08 * s, 0.05 * s, 0.08 * s, 0, 0.17 * s, 0)); return g;
+}
+const giftPalette = [[0xd62839, 0xf7d046], [0x1f6fd0, 0xffffff], [0x2e9e5a, 0xf7d046], [0x8e3fc4, 0xffd7f0], [0xf08a1a, 0x2b4a9a]];
+const sleigh = new THREE.Group(); scene.add(sleigh);
+const sleighPile = [];
+let santaParts = {};
+function buildSleigh() {
+  const red = std(0xb5121c, 0.32, 0.25), gold = std(0xe0ad40, 0.28, 0.95), cream = std(0xf4eee2, 0.9), skin = std(0xf0bf9a, 0.7);
+  const g = new THREE.Group(); g.position.y = 0.05; sleigh.add(g);
+  g.add(mesh(geo.box, red, 1.1, 0.14, 2.0, 0, 0.5, 0)); g.add(mesh(geo.box, darkWood, 1.0, 0.06, 1.9, 0, 0.42, 0));
+  for (const s of [-1, 1]) {
+    g.add(mesh(geo.box, red, 0.1, 0.5, 2.0, s * 0.55, 0.78, 0)); g.add(mesh(geo.box, gold, 0.13, 0.05, 2.05, s * 0.55, 1.04, 0));
+    const run = mesh(geo.cyl, gold, 0.055, 2.3, 0.055, s * 0.46, 0.12, -0.05); run.rotation.x = Math.PI / 2; g.add(run);
+    const curl = new THREE.Mesh(new THREE.TorusGeometry(0.42, 0.055, 8, 14, Math.PI / 2), gold); curl.rotation.set(0, -Math.PI / 2, -Math.PI / 2); curl.position.set(s * 0.46, 0.12 + 0.42, 1.1 - 0.05); curl.castShadow = true; g.add(curl);
+    for (const z of [-0.6, 0.55]) g.add(mesh(geo.box, gold, 0.05, 0.38, 0.05, s * 0.46, 0.3, z));
+  }
+  g.add(mesh(geo.box, red, 1.1, 1.0, 0.1, 0, 1.0, -1.0)); g.add(mesh(geo.box, gold, 1.15, 0.05, 0.14, 0, 1.52, -1.0));
+  const dash = new THREE.Mesh(new THREE.TorusGeometry(0.5, 0.09, 10, 20, Math.PI), red); dash.rotation.set(0, Math.PI / 2, 0); dash.scale.set(1, 0.75, 1); dash.position.set(0, 0.55, 1.0); dash.castShadow = true; g.add(dash);
+  g.add(mesh(geo.sphere, gold, 0.11, 0.11, 0.11, 0, 0.98, 1.0));
+  // Laterne am Bug
+  g.add(mesh(geo.sphere, new THREE.MeshBasicMaterial({ color: 0xffe2a0 }), 0.1, 0.1, 0.1, 0, 1.12, 1.18, false));
+  const lt = new THREE.PointLight(0xffd29a, 9, 9, 2); lt.position.set(0, 2.0, 0.6); g.add(lt);
+  g.scale.setScalar(1.45);
+  // Weihnachtsmann
+  const santa = new THREE.Group(); santa.position.set(0, 0.55, 0.05); g.add(santa); santaParts.body = santa;
+  santa.add(mesh(geo.sphere, red, 0.36, 0.46, 0.34, 0, 0.42, 0));
+  santa.add(mesh(geo.cyl, std(0x1a1a1a, 0.5), 0.37, 0.07, 0.35, 0, 0.35, 0)); santa.add(mesh(geo.box, gold, 0.1, 0.09, 0.04, 0, 0.35, 0.33, false));
+  santa.add(mesh(geo.sphere, cream, 0.28, 0.1, 0.28, 0, 0.62, 0.02, false));
+  const head = new THREE.Group(); head.position.set(0, 0.98, 0.05); santa.add(head); santaParts.head = head;
+  head.add(mesh(geo.sphere, skin, 0.2, 0.21, 0.2)); head.add(mesh(geo.sphere, std(0xe08a80, 0.7), 0.05, 0.04, 0.04, 0, -0.02, 0.19, false));
+  head.add(mesh(geo.sphere, cream, 0.23, 0.2, 0.17, 0, -0.14, 0.1)); head.add(mesh(geo.sphere, cream, 0.1, 0.05, 0.07, 0, 0.005, 0.2, false));
+  for (const s of [-1, 1]) { head.add(mesh(geo.sphere, std(0x101010, 0.3), 0.025, 0.025, 0.02, s * 0.07, 0.06, 0.19, false)); head.add(mesh(geo.box, cream, 0.1, 0.03, 0.04, s * 0.07, 0.11, 0.18, false)); }
+  const hat = mesh(geo.cone, red, 0.21, 0.42, 0.21, 0, 0.3, -0.02); hat.rotation.x = -0.3; head.add(hat);
+  head.add(mesh(geo.cyl, cream, 0.22, 0.07, 0.22, 0, 0.12, 0.02)); head.add(mesh(geo.sphere, cream, 0.07, 0.07, 0.07, 0, 0.5, -0.13, false));
+  // Arme
+  for (const s of [-1, 1]) { const arm = mesh(geo.cyl, red, 0.08, 0.5, 0.08, s * 0.34, 0.5, 0.2); arm.rotation.x = 1.0; santa.add(arm); santa.add(mesh(geo.sphere, std(0xf4eee2, 0.9), 0.08, 0.08, 0.08, s * 0.34, 0.5 + 0.0, 0.42, false)); }
+  // Geschenkberg im Heck
+  const pile = new THREE.Group(); pile.position.set(0, 0.55, -0.62); g.add(pile);
+  const spots = [[-0.28, 0, 0, 1.15], [0.26, 0, 0.0, 1.0], [0, 0.0, -0.18, 1.05], [-0.15, 0.3, -0.05, 0.9], [0.18, 0.3, -0.1, 0.85]];
+  spots.forEach(([x, y, z, s], i) => { const p = giftPalette[i % giftPalette.length]; const b = giftBox(p[0], p[1], s); b.position.set(x, y + 0.15 * s, z); b.rotation.y = R(-0.4, 0.4); pile.add(b); sleighPile.push({ b, base: s, t: 1 }); });
+  sleigh.userData.lt = lt;
+}
+
+/* ---------- Rentiere ---------- */
+const deerMat = std(0x6c4a30, 1), deerLight = std(0xcfb392, 1), antlerMat = std(0xd6c29a, 0.85), eyeMat = new THREE.MeshBasicMaterial({ color: 0xff2a1a, toneMapped: false });
+function antler(side) {
+  const g = new THREE.Group(); const seg = (len, rot, parent, tx = 0, ty = 0) => {
+    const m = mesh(geo.cyl, antlerMat, 0.02, len, 0.02, 0, len / 2, 0); const p = new THREE.Group(); p.position.set(tx, ty, 0); p.rotation.z = rot; p.add(m); parent.add(p); return p;
+  };
+  const a = seg(0.28, -0.5 * side, g); const b = seg(0.26, 0.5 * side, a, 0, 0.28); const c = seg(0.22, 0.55 * side, b, 0, 0.26); seg(0.16, -0.9 * side, a, 0, 0.14); seg(0.15, -0.9 * side, b, 0, 0.13); seg(0.12, -0.8 * side, c, 0, 0.12);
+  return g;
+}
+function buildDeer() {
+  const g = new THREE.Group(); const body = new THREE.Group(); g.add(body);
+  body.add(mesh(geo.sphere, deerMat, 0.26, 0.28, 0.5, 0, 0.78, 0)); body.add(mesh(geo.sphere, deerLight, 0.2, 0.2, 0.3, 0, 0.7, 0.12)); body.add(mesh(geo.sphere, deerMat, 0.25, 0.26, 0.28, 0, 0.8, -0.38));
+  const neck = mesh(geo.cyl, deerMat, 0.1, 0.5, 0.1, 0, 1.0, 0.5); neck.rotation.x = 0.7; body.add(neck);
+  const head = new THREE.Group(); head.position.set(0, 1.28, 0.7); body.add(head);
+  head.add(mesh(geo.sphere, deerMat, 0.13, 0.14, 0.2)); head.add(mesh(geo.sphere, deerLight, 0.085, 0.085, 0.14, 0, -0.05, 0.19)); head.add(mesh(geo.sphere, std(0x181010, 0.4), 0.035, 0.03, 0.03, 0, -0.04, 0.32, false));
+  for (const s of [-1, 1]) {
+    head.add(mesh(geo.sphere, eyeMat, 0.028, 0.028, 0.02, s * 0.1, 0.04, 0.1, false));
+    const ear = mesh(geo.cone, deerMat, 0.05, 0.16, 0.03, s * 0.12, 0.13, -0.04); ear.rotation.z = -s * 0.8; head.add(ear);
+    const an = antler(s); an.position.set(s * 0.07, 0.14, -0.05); an.scale.setScalar(1.15); head.add(an);
+  }
+  body.add(mesh(geo.sphere, std(0xf4f0e8, 0.9), 0.07, 0.07, 0.08, 0, 0.92, -0.62, false));
+  const legs = [];
+  for (const [lx, lz] of [[-0.14, 0.34], [0.14, 0.34], [-0.14, -0.34], [0.14, -0.34]]) {
+    const hip = new THREE.Group(); hip.position.set(lx, 0.7, lz); const up = mesh(geo.cyl, deerMat, 0.055, 0.38, 0.055, 0, -0.18, 0); const lo = mesh(geo.cyl, deerLight, 0.04, 0.36, 0.04, 0, -0.5, 0.0); const hoof = mesh(geo.box, std(0x151010, 0.5), 0.07, 0.05, 0.09, 0, -0.69, 0.01, false);
+    hip.add(up, lo, hoof); g.add(hip); legs.push(hip);
+  }
+  g.userData = { legs, body, head }; g.scale.setScalar(1.2); return g;
+}
+
+/* =====================================================================
+   Spiellogik
+   ===================================================================== */
+class Mover {
+  constructor(x, y, speed) { this.speed = speed; this.reset(x, y); }
+  reset(x, y) { this.cx = x; this.cy = y; this.tx = x; this.ty = y; this.t = 0; this.dir = [0, 0]; this.moving = false; }
+  get px() { return this.cx + (this.tx - this.cx) * this.t; }
+  get py() { return this.cy + (this.ty - this.cy) * this.t; }
+  advance(dt, decide, wantRev) {
+    let d = this.speed * dt, guard = 0;
+    while (d > 1e-6 && guard++ < 8) {
+      if (this.moving) {
+        if (wantRev && wantRev[0] === -this.dir[0] && wantRev[1] === -this.dir[1]) {
+          [this.cx, this.tx] = [this.tx, this.cx]; [this.cy, this.ty] = [this.ty, this.cy]; this.t = 1 - this.t; this.dir = [wantRev[0], wantRev[1]];
+        }
+        const rem = 1 - this.t;
+        if (d < rem) { this.t += d; d = 0; } else { d -= rem; this.cx = this.tx; this.cy = this.ty; this.t = 0; this.moving = false; }
+      } else {
+        const nd = decide(); if (!nd) { d = 0; break; }
+        this.dir = nd; this.tx = this.cx + nd[0]; this.ty = this.cy + nd[1]; this.moving = true;
+      }
+    }
+  }
+}
+const santa = new Mover(SANTA_START[0], SANTA_START[1], SANTA_SPEED);
+const deerStart = [[8, 7], [10, 7], [12, 7], [9, 7]];
+const deers = deerStart.map((s, i) => ({ m: new Mover(s[0], s[1], DEER_SPEED), home: s, release: 1.2 + i * 1.6, obj: null, phase: i * 1.7, yaw: 0 }));
+let wantDir = [0, -1];
+const game = { state: 'title', time: ROUND_TIME, score: 0, lives: START_LIVES, invuln: 0, freeze: 0, spawnT: 0, paused: false, clock: 0, shake: 0, over: '' };
+
+const keys = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1], KeyA: [-1, 0], KeyD: [1, 0], KeyW: [0, -1], KeyS: [0, 1] };
+addEventListener('keydown', e => {
+  if (keys[e.code]) { wantDir = keys[e.code]; e.preventDefault(); }
+  else if (e.code === 'Space' || e.code === 'Enter') { if (game.state !== 'playing') startGame(); e.preventDefault(); }
+  else if (e.code === 'KeyP' && game.state === 'playing') { game.paused = !game.paused; showMsg(game.paused ? 'pause' : null); }
+});
+document.getElementById('go').addEventListener('click', () => { if (game.state !== 'playing') startGame(); });
+
+function pickDeerDir(d, i) {
+  const m = d.m; const rev = [-m.dir[0], -m.dir[1]];
+  let opts = DIRS.filter(v => open(m.cx + v[0], m.cy + v[1]) && !(v[0] === rev[0] && v[1] === rev[1] && (m.dir[0] || m.dir[1])));
+  if (!opts.length) opts = DIRS.filter(v => open(m.cx + v[0], m.cy + v[1]));
+  let tx = santa.cx, ty = santa.cy;
+  const sd = santa.dir;
+  if (game.clock < 3.5 + i) { [tx, ty] = [[1, 1], [19, 1], [1, 13], [19, 13]][i]; }
+  else if (i === 1) { tx += sd[0] * 3; ty += sd[1] * 3; }
+  else if (i === 2) { const a = deers[0].m; tx = santa.cx + (santa.cx - a.cx); ty = santa.cy + (santa.cy - a.cy); }
+  else if (i === 3 && Math.hypot(m.cx - santa.cx, m.cy - santa.cy) < 5) { tx = 1; ty = 13; }
+  if (Math.random() < 0.08) return opts[Math.floor(Math.random() * opts.length)];
+  let best = opts[0], bd = 1e9; for (const v of opts) { const dd = Math.hypot(m.cx + v[0] - tx, m.cy + v[1] - ty) + Math.random() * 0.3; if (dd < bd) { bd = dd; best = v; } } return best;
+}
+
+/* ---------- Kinder ---------- */
+function activateHouse(h) { h.state = 'active'; h.kid.visible = true; h.kid.material.opacity = 1; }
+function pickKid() {
+  const idle = houses.filter(h => h.state === 'idle'); if (!idle.length) return;
+  let best = null, bd = -1;
+  for (let k = 0; k < 4; k++) { const h = idle[Math.floor(Math.random() * idle.length)]; const d = Math.hypot(h.cx - santa.px, h.cy - santa.py); if (d > bd) { bd = d; best = h; } }
+  activateHouse(best);
+}
+const gifts = [];
+const sparkles = new Particles(500, { additive: true, soft: 0.1, gravity: 4, drag: 0.8 });
+const puffs = new Particles(300, { soft: 0.2, gravity: -0.3, drag: 1.5 });
+const smokeP = new Particles(160, { soft: 0.1, gravity: -0.5, drag: 0.4 });
+const snowfall = new Particles(1500,{ soft: 0.5 });
+const SNOW_BOX = [60, 26, 46];
+for (let i = 0; i < snowfall.n; i++) {
+  snowfall.pos.set([R(-1, 1) * SNOW_BOX[0], R(0, SNOW_BOX[1]), R(-1, 1) * SNOW_BOX[2]], i * 3); snowfall.vel.set([R(-.4, .2), -R(0.8, 2.0), R(-.2, .2)], i * 3);
+  snowfall.size[i] = R(0.07, 0.2) * 100; snowfall.alpha[i] = R(0.5, 0.95); snowfall.color.set([0.95, 0.97, 1], i * 3); snowfall.life[i] = 1e9;
+}
+function launchGift(h) {
+  const p = giftPalette[Math.floor(Math.random() * giftPalette.length)];
+  const g = giftBox(p[0], p[1], 1.3); scene.add(g);
+  const from = new THREE.Vector3(0, 1.1, -0.6); sleigh.localToWorld(from);
+  const to = new THREE.Vector3(0.05, -0.12, 0.2); h.kidWin.localToWorld(to);
+  gifts.push({ g, from, to, t: 0, h, spin: R(5, 9) });
+  const pi = Math.floor(Math.random() * sleighPile.length); sleighPile[pi].t = 0; sleighPile[pi].b.visible = false;
+  h.state = 'busy';
+}
+function giftArrived(gf) {
+  const h = gf.h; scene.remove(gf.g);
+  game.score++; document.getElementById('score').textContent = game.score;
+  h.kid.visible = false; h.state = 'cooldown'; h.timer = R(5, 9);
+  h.present.clear(); const p = giftPalette[Math.floor(Math.random() * giftPalette.length)]; const b = giftBox(p[0], p[1], 1.0); h.present.add(b); h.present.visible = true;
+  const wp = gf.to;
+  for (let i = 0; i < 70; i++) { const a = Math.random() * 6.28, s = R(1, 4.5), c = Math.random(); sparkles.emit(wp.x, wp.y, wp.z, Math.cos(a) * s, R(0.5, 4), Math.sin(a) * s, R(0.7, 1.4), R(0.12, 0.3) * 100, c < 0.33 ? [1, 0.82, 0.3] : c < 0.66 ? [1, 0.4, 0.4] : [0.5, 0.8, 1]); }
+  bumpScore();
+}
+function bumpScore() { const e = document.getElementById('pScore'); e.style.transition = 'none'; e.style.transform = 'scale(1.18)'; requestAnimationFrame(() => { e.style.transition = 'transform .25s'; e.style.transform = ''; }); }
+
+/* ---------- Ablauf ---------- */
+const $ = id => document.getElementById(id);
+function showMsg(kind) {
+  const m = $('msg'); if (!kind) { m.classList.add('hidden'); return; } m.classList.remove('hidden');
+  const c = $('card');
+  if (kind === 'pause') c.innerHTML = '<h1>Pause</h1><p>Drücke <kbd>P</kbd> zum Weiterfahren.</p>';
+  else if (kind === 'over') {
+    let best = 0; try { best = +localStorage.getItem('santa-best') || 0; if (game.score > best) { best = game.score; localStorage.setItem('santa-best', best); } } catch (e) { }
+    c.innerHTML = `<h2>${game.over}</h2><div id="big">${game.score}</div><p>Geschenke verteilt${best ? ` · Rekord: <b>${best}</b>` : ''}</p><p>${game.score >= 30 ? 'Ho ho ho – eine Glanzleistung!' : game.score >= 15 ? 'Die Kinder sind begeistert!' : 'Beim nächsten Mal klappt’s noch besser.'}</p><button id="go2" style="pointer-events:auto" class="goBtn">Nochmal (Leertaste)</button>`;
+    const b = $('go2'); b.id = 'go'; b.addEventListener('click', () => startGame());
+  }
+}
+function updateLives() { $('lives').textContent = '♥'.repeat(game.lives) + '♡'.repeat(START_LIVES - game.lives); }
+function startGame() {
+  game.state = 'playing'; game.time = ROUND_TIME; game.score = 0; game.lives = START_LIVES; game.invuln = 0; game.freeze = 0.8; game.clock = 0; game.paused = false;
+  santa.reset(SANTA_START[0], SANTA_START[1]); wantDir = [0, -1];
+  deers.forEach(d => d.m.reset(d.home[0], d.home[1]));
+  houses.forEach(h => { h.state = 'idle'; h.kid.visible = false; h.present.visible = false; });
+  gifts.forEach(g => scene.remove(g.g)); gifts.length = 0;
+  for (let i = 0; i < KIDS_AT_ONCE; i++) pickKid();
+  $('score').textContent = 0; $('time').textContent = ROUND_TIME; updateLives(); $('pTime').classList.remove('low');
+  $('hud').style.display = 'block'; showMsg(null);
+  sleighPile.forEach(p => { p.b.visible = true; p.t = 1; });
+}
+function endGame(reason) {
+  game.state = 'over'; game.over = reason; showMsg('over');
+}
+function hitSanta() {
+  game.lives--; updateLives(); game.invuln = 2.6; game.freeze = 1.4; game.shake = 0.6;
+  const f = $('flash'); f.style.transition = 'none'; f.style.opacity = 0.45; requestAnimationFrame(() => { f.style.transition = 'opacity .5s ease-out'; f.style.opacity = 0; });
+  santa.reset(SANTA_START[0], SANTA_START[1]); wantDir = [0, -1];
+  deers.forEach(d => { d.m.reset(d.home[0], d.home[1]); d.release = game.clock + 1.2 + Math.random() * 2; });
+  if (game.lives <= 0) endGame('Die Rentiere haben dich erwischt!');
+}
+
+/* ---------- Aufbau der Szene ---------- */
+buildGround(); buildTerrain(); buildDecor(); buildTrees(); buildSleigh();
+const deerObjs = deers.map(d => { d.obj = buildDeer(); scene.add(d.obj); return d.obj; });
+let santaYaw = 0;
+const camTarget = new THREE.Vector3(wx(SANTA_START[0]), 0, wz(SANTA_START[1]));
+const camLook = camTarget.clone();
+
+/* ---------- Postprocessing ---------- */
+const rt = new THREE.WebGLRenderTarget(innerWidth, innerHeight, { type: THREE.HalfFloatType, samples: 2 });
+const composer = new EffectComposer(renderer, rt);
+composer.addPass(new RenderPass(scene, camera));
+const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.5, 0.6, 1.0);
+composer.addPass(bloom); composer.addPass(new OutputPass());
+
+/* Automatische Qualitätsstufen: 0 = Bloom + Schatten, 1 = nur Schatten, 2 = einfach & schnell */
+let quality = 0;
+function setQuality(q) {
+  quality = q;
+  renderer.setPixelRatio(q === 0 ? 1 : q === 1 ? Math.min(devicePixelRatio, 1) : 0.75);
+  renderer.shadowMap.enabled = q < 2;
+  if (q >= 1) { moonLight.shadow.mapSize.set(1024, 1024); if (moonLight.shadow.map) { moonLight.shadow.map.dispose(); moonLight.shadow.map = null; } }
+  if (q >= 2) { moonLight.castShadow = false; snowfall.mesh.visible = true; }
+  scene.traverse(o => { if (o.material) { const ms = Array.isArray(o.material) ? o.material : [o.material]; ms.forEach(m => m.needsUpdate = true); } });
+  onResize();
+}
+function onResize() {
+  const w = innerWidth, h = innerHeight; renderer.setSize(w, h); composer.setSize(w, h); camera.aspect = w / h; camera.updateProjectionMatrix();
+  particleUniforms.uScale.value = h * renderer.getPixelRatio() / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2)) / 100;
+}
+addEventListener('resize', onResize); onResize();
+
+/* ---------- Hauptschleife ---------- */
+const clock = new THREE.Clock(); let T = 0;
+const tmpV = new THREE.Vector3(), tmpC = new THREE.Color();
+let fpsT = 0, fpsN = 0, fpsChecks = 0;
+function frame() {
+  requestAnimationFrame(frame);
+  const real = Math.min(clock.getDelta(), 0.3);
+  const dt = Math.min(real, 0.05); T += dt;
+  const playing = game.state === 'playing' && !game.paused;
+  // Spielzeit läuft in Echtzeit, auch wenn die Bildrate niedrig ist (in kleinen Teilschritten)
+  if (playing) for (let rem = real; rem > 1e-4 && game.state === 'playing'; rem -= 0.05) update(Math.min(rem, 0.05));
+  animate(dt, playing);
+  if (quality === 0) composer.render(); else renderer.render(scene, camera);
+  // Bildrate beobachten und bei Bedarf Qualität senken
+  fpsT += real; fpsN++;
+  if (fpsT >= 1.5) { const fps = fpsN / fpsT; fpsT = 0; fpsN = 0; if (fpsChecks++ >= 1 && fps < 38 && quality < 2) setQuality(quality + 1); }
+}
+
+function update(dt) {
+  game.clock += dt;
+  game.time -= dt; const tl = Math.max(0, game.time); $('time').textContent = Math.ceil(tl); $('pTime').classList.toggle('low', tl <= 10);
+  if (game.time <= 0) { endGame('Zeit abgelaufen!'); return; }
+  game.invuln = Math.max(0, game.invuln - dt); game.freeze = Math.max(0, game.freeze - dt);
+
+  // Weihnachtsmann
+  santa.advance(dt, () => {
+    if (open(santa.cx + wantDir[0], santa.cy + wantDir[1])) return wantDir;
+    if ((santa.dir[0] || santa.dir[1]) && open(santa.cx + santa.dir[0], santa.cy + santa.dir[1])) return santa.dir;
+    return null;
+  }, wantDir);
+
+  // Rentiere
+  deers.forEach((d, i) => {
+    if (game.clock < d.release || game.freeze > 0) return;
+    d.m.speed = DEER_SPEED * (1 + Math.min(0.12, game.clock / 400));
+    d.m.advance(dt, () => pickDeerDir(d, i), null);
+  });
+
+  // Kollision
+  if (game.invuln <= 0) for (const d of deers) {
+    if (Math.hypot(d.m.px - santa.px, d.m.py - santa.py) < 0.62) { hitSanta(); break; }
+  }
+
+  // Geschenke abwerfen
+  const sxp = wx(santa.px), szp = wz(santa.py);
+  for (const h of houses) {
+    if (h.state === 'active') {
+      if (Math.hypot(h.cx - santa.px, h.cy - santa.py) < 1.28) launchGift(h);
+    } else if (h.state === 'cooldown') { h.timer -= dt; if (h.timer <= 0) h.state = 'idle'; }
+  }
+  game.spawnT -= dt;
+  const activeN = houses.filter(h => h.state === 'active' || h.state === 'busy').length;
+  if (game.spawnT <= 0 && activeN < KIDS_AT_ONCE) { pickKid(); game.spawnT = 0.5; }
+}
+
+function animate(dt, playing) {
+  // Schlitten
+  const sx = wx(santa.px), sz = wz(santa.py);
+  sleigh.position.set(sx, 0, sz);
+  if (santa.dir[0] || santa.dir[1]) { const target = Math.atan2(santa.dir[0], santa.dir[1]); let diff = target - santaYaw; diff = Math.atan2(Math.sin(diff), Math.cos(diff)); santaYaw += diff * Math.min(1, dt * 9); }
+  sleigh.rotation.y = santaYaw;
+  const moving = santa.moving && playing;
+  sleigh.position.y = moving ? Math.sin(T * 14) * 0.02 : 0;
+  sleigh.rotation.z = moving ? Math.sin(T * 7) * 0.012 : 0;
+  sleigh.visible = !(game.invuln > 0 && Math.floor(T * 14) % 2 === 0 && game.state === 'playing');
+  santaParts.head.rotation.y = Math.sin(T * 1.3) * 0.25; santaParts.body.position.y = 0.55 + Math.sin(T * 2.2) * 0.012;
+  sleighPile.forEach(p => { if (p.t < 1) { p.t += dt * 2.2; if (p.t > 0.25) p.b.visible = true; const e = clamp((p.t - 0.25) / 0.75, 0, 1); const o = 1 + Math.sin(e * Math.PI * 2.0) * 0.18 * (1 - e); p.b.scale.setScalar(p.t < 0.25 ? 0.001 : (1 - Math.pow(1 - e, 3)) * o); } });
+  if (moving && Math.random() < 0.8) { const back = tmpV.set(0, 0.15, -1.6).applyMatrix4(sleigh.matrixWorld); puffs.emit(back.x + R(-.4, .4), back.y, back.z + R(-.4, .4), R(-.4, .4), R(0.3, 0.9), R(-.4, .4), R(0.4, 0.7), R(0.12, 0.22) * 100, [0.9, 0.94, 1], 1.2); }
+  if (moving && Math.random() < 0.35) { const b = tmpV.set(R(-.5, .5), 0.9, -1.15).applyMatrix4(sleigh.matrixWorld); sparkles.emit(b.x, b.y, b.z, R(-.3, .3), R(0.1, 0.9), R(-.3, .3), R(0.5, 1.0), R(0.08, 0.16) * 100, [1, 0.85, 0.45]); }
+
+  // Rentiere
+  deers.forEach((d, i) => {
+    const o = d.obj, px = wx(d.m.px), pz = wz(d.m.py); o.position.set(px, 0.02, pz);
+    if (d.m.dir[0] || d.m.dir[1]) { const target = Math.atan2(d.m.dir[0], d.m.dir[1]); let diff = target - d.yaw; diff = Math.atan2(Math.sin(diff), Math.cos(diff)); d.yaw += diff * Math.min(1, dt * 10); }
+    o.rotation.y = d.yaw;
+    const run = (d.m.moving && playing) ? 1 : 0, ph = T * 12 + d.phase, { legs, body, head } = o.userData;
+    legs.forEach((l, k) => { l.rotation.x = Math.sin(ph + (k === 0 || k === 3 ? 0 : Math.PI)) * 0.7 * run; });
+    body.position.y = Math.abs(Math.sin(ph)) * 0.09 * run; body.rotation.x = Math.sin(ph) * 0.06 * run;
+    head.rotation.x = Math.sin(ph + 1) * 0.1 * run + Math.sin(T * 2 + i) * 0.04;
+    if (run && Math.random() < 0.06) { tmpV.set(0, 1.3, 0.95).applyMatrix4(o.matrixWorld); puffs.emit(tmpV.x, tmpV.y, tmpV.z, 0, 0.3, 0, 0.8, 0.25 * 100, [0.9, 0.95, 1], 2.0); }
+    if (run && Math.random() < 0.3) puffs.emit(px + R(-.3, .3), 0.1, pz + R(-.3, .3), R(-.3, .3), R(0.3, 0.9), R(-.3, .3), 0.5, 0.2 * 100, [0.93, 0.96, 1], 1.5);
+  });
+
+  // Kinder & Fenster
+  for (const h of houses) {
+    const act = h.state === 'active';
+    const k = act ? 1 : 0;
+    h.glassMat.emissiveIntensity = lerp(h.glassMat.emissiveIntensity, act ? 2.4 + Math.sin(T * 5 + h.cx) * 0.5 : 0.5, Math.min(1, dt * 6));
+    h.glow.material.opacity = lerp(h.glow.material.opacity, act ? 0.75 + Math.sin(T * 5 + h.cy) * 0.15 : 0, Math.min(1, dt * 6));
+    h.star.material.opacity = lerp(h.star.material.opacity, act ? 0.65 + Math.sin(T * 7 + h.cx * 2) * 0.35 : 0, Math.min(1, dt * 6));
+    h.star.position.y = h.topY + Math.sin(T * 3 + h.cx) * 0.12;
+    h.beam.material.opacity = h.star.material.opacity * 0.35;
+    if (h.kid.visible) { h.kid.position.y = -0.12 + Math.abs(Math.sin(T * 6 + h.cx)) * 0.05; h.kid.rotation.z = Math.sin(T * 6 + h.cx) * 0.06; }
+  }
+  // Fliegende Geschenke
+  for (let i = gifts.length - 1; i >= 0; i--) {
+    const gf = gifts[i]; gf.t += dt / 0.7; const t = Math.min(gf.t, 1);
+    gf.g.position.lerpVectors(gf.from, gf.to, t); gf.g.position.y += Math.sin(t * Math.PI) * 1.7; gf.g.rotation.x += dt * gf.spin; gf.g.rotation.y += dt * gf.spin * 0.6;
+    if (Math.random() < 0.8) sparkles.emit(gf.g.position.x, gf.g.position.y, gf.g.position.z, R(-.3, .3), R(-.3, .3), R(-.3, .3), 0.5, R(.1, .2) * 100, [1, 0.85, 0.4]);
+    if (gf.t >= 1) { giftArrived(gf); gifts.splice(i, 1); }
+  }
+  // Rauch
+  for (const s of smokers) { s.t -= dt; if (s.t <= 0) { s.t = R(0.5, 1.1); tmpV.set(s.x, s.y, s.z); s.g.localToWorld(tmpV); smokeP.emit(tmpV.x, tmpV.y, tmpV.z, R(0.05, 0.4), R(0.7, 1.1), R(-.1, .1), R(3.5, 5), R(0.35, 0.6) * 100, [0.78, 0.8, 0.88], 3.2); } }
+  // Lichterketten
+  if (twinkle.mesh) {
+    for (let i = 0; i < twinkle.list.length; i++) { const t = twinkle.list[i], k = 0.55 + 0.9 * Math.max(0, Math.sin(T * 2.4 + t.ph)); tmpC.setRGB(t.base[0] * k * 2, t.base[1] * k * 2, t.base[2] * k * 2); twinkle.mesh.setColorAt(i, tmpC); }
+    twinkle.mesh.instanceColor.needsUpdate = true;
+  }
+
+  // Kamera
+  let look;
+  if (game.state === 'title') {
+    const a = T * 0.08; camTarget.set(Math.sin(a) * 10, 0, Math.cos(a) * 6);
+  } else camTarget.set(sx + santa.dir[0] * 1.2, 0, sz + santa.dir[1] * 1.2);
+  camLook.lerp(camTarget, Math.min(1, dt * 3.2));
+  const aspect = camera.aspect, dist = clamp(29 + (1.5 - aspect) * 8, 26, 40);
+  const shake = game.shake > 0 ? (game.shake -= dt, (Math.random() - .5) * game.shake * 0.8) : 0;
+  const lx = clamp(camLook.x, -HX + 14, HX - 14), lz = clamp(camLook.z, -HZ + 10, HZ - 6);
+  camera.position.set(lx + shake, dist * 0.88, lz + dist * 0.47 + shake);
+  camera.lookAt(lx, 0, lz - 0.5);
+  moonLight.position.set(sx, 0, sz).add(MOON_OFFSET); moonLight.target.position.set(sx, 0, sz);
+  // Schatten-Texel-Snapping vermeiden: Position leicht gerundet
+  moonLight.position.x = Math.round(moonLight.position.x * 4) / 4; moonLight.position.z = Math.round(moonLight.position.z * 4) / 4;
+  moonLight.target.position.x = moonLight.position.x - MOON_OFFSET.x; moonLight.target.position.z = moonLight.position.z - MOON_OFFSET.z;
+
+  // Partikel
+  sparkles.update(dt); puffs.update(dt); smokeP.update(dt);
+  const sp = snowfall; const cx = camera.position.x, cz = camera.position.z - 12;
+  for (let i = 0; i < sp.n; i++) {
+    const k = i * 3; sp.pos[k] += (sp.vel[k] + Math.sin(T * 0.7 + i) * 0.35) * dt; sp.pos[k + 1] += sp.vel[k + 1] * dt; sp.pos[k + 2] += sp.vel[k + 2] * dt;
+    if (sp.pos[k + 1] < 0) sp.pos[k + 1] += SNOW_BOX[1];
+    const dx = sp.pos[k] - cx; if (dx < -SNOW_BOX[0]) sp.pos[k] += SNOW_BOX[0] * 2; else if (dx > SNOW_BOX[0]) sp.pos[k] -= SNOW_BOX[0] * 2;
+    const dz = sp.pos[k + 2] - cz; if (dz < -SNOW_BOX[2]) sp.pos[k + 2] += SNOW_BOX[2] * 2; else if (dz > SNOW_BOX[2]) sp.pos[k + 2] -= SNOW_BOX[2] * 2;
+  }
+  sp.aPos.needsUpdate = true; sp.aSize.needsUpdate = sp.aAlpha.needsUpdate = sp.aColor.needsUpdate = false;
+}
+
+$('loading').remove();
+frame();
+window.__game = { game, santa, deers, houses, scene, camera, startGame };
+</script>
+</body>
+</html>
